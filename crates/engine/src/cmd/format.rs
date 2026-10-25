@@ -590,9 +590,9 @@ fn font_edits(p: &Value) -> Result<FontEdits> {
 fn color_command_value(c: &deckcraft_model::ColorRef) -> Value {
     use deckcraft_model::ColorBase;
     let mut o = serde_json::Map::new();
-    for m in &c.mods {
-        // `inv`, `comp` and `gray` have no value.
-        o.insert(m.xml_name().to_string(), m.value().map_or(json!(true), |v| json!(v)));
+    // An ordered list, so the order of the transforms and repeated ones such as `[inv, inv]` are kept.
+    if !c.mods.is_empty() {
+        o.insert("mods".into(), json!(c.mods));
     }
     // `#RRGGBB`, or `#RRGGBBAA` for a color that is not opaque.
     let hex = |c: &deckcraft_color::Rgba| if c.a == 255 { format!("#{}", c.hex()) } else { format!("#{}{:02X}", c.hex(), c.a) };
@@ -1556,7 +1556,10 @@ mod tests {
         let inverted = ColorRef { base: ColorBase::Preset { name: "red".into() }, mods: vec![] }.with(ColorTransform::Inv);
         let translucent = ColorRef { base: ColorBase::System { name: "windowText".into(), last: Rgba::rgba(0x12, 0x34, 0x56, 0x80) }, mods: vec![] };
         let rgb = ColorRef::rgb(Rgba::rgba(0x12, 0x34, 0x56, 0x80));
-        for color in [preset, system, inverted, translucent, rgb] {
+        // A repeated transform, and two transforms in an order that is not alphabetical.
+        let twice = inverted.clone().with(ColorTransform::Inv);
+        let ordered = ColorRef::scheme(SchemeSlot::Accent2).with(ColorTransform::LumOff(20_000)).with(ColorTransform::LumMod(50_000));
+        for color in [preset, system, inverted, translucent, rgb, twice, ordered] {
             let mut s = shape();
             let fill = Fill::Solid { color: color.clone() };
             format_run(&mut s, &|r| r.fill = Some(fill.clone())).unwrap();

@@ -66,9 +66,12 @@ fn command_t_opens_the_font_dialog_and_cancel_keeps_the_text() {
 
 #[test]
 fn preset_and_system_colors_show_in_the_dialog_and_ok_keeps_them() {
-    for (color, shown) in
-        [(json!({"preset": "red", "lumMod": 50000}), "red"), (json!({"system": "windowText", "last": "#123456", "alpha": 60000}), "#123456")]
-    {
+    for (color, shown) in [
+        (json!({"preset": "red", "lumMod": 50000}), "red"),
+        (json!({"system": "windowText", "last": "#123456", "alpha": 60000}), "#123456"),
+        (json!({"preset": "red", "mods": [{"op": "inv"}, {"op": "inv"}]}), "red"),
+        (json!({"scheme": "accent2", "mods": [{"op": "lumOff", "val": 20000}, {"op": "lumMod", "val": 50000}]}), "accent2"),
+    ] {
         let mut h = harness();
         h.state_mut().session.execute("format.fontDialog", &json!({ "color": color })).unwrap();
         let before = fill_of(&h);
