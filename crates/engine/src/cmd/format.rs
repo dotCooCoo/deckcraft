@@ -583,14 +583,15 @@ fn color_command_value(c: &deckcraft_model::ColorRef) -> Value {
     use deckcraft_model::ColorBase;
     let mut o = serde_json::Map::new();
     for m in &c.mods {
-        if let Some(v) = m.value() {
-            o.insert(m.xml_name().to_string(), json!(v));
-        }
+        // `inv`, `comp` and `gray` have no value.
+        o.insert(m.xml_name().to_string(), m.value().map_or(json!(true), |v| json!(v)));
     }
+    // `#RRGGBB`, or `#RRGGBBAA` for a colour that is not opaque.
+    let hex = |c: &deckcraft_color::Rgba| if c.a == 255 { format!("#{}", c.hex()) } else { format!("#{}{:02X}", c.hex(), c.a) };
     match &c.base {
-        ColorBase::Rgb { rgb } if o.is_empty() => json!(format!("#{}", rgb.hex())),
+        ColorBase::Rgb { rgb } if o.is_empty() => json!(hex(rgb)),
         ColorBase::Rgb { rgb } => {
-            o.insert("rgb".into(), json!(format!("#{}", rgb.hex())));
+            o.insert("rgb".into(), json!(hex(rgb)));
             Value::Object(o)
         }
         ColorBase::Scheme { slot } => {
@@ -603,7 +604,7 @@ fn color_command_value(c: &deckcraft_model::ColorRef) -> Value {
         }
         ColorBase::System { name, last } => {
             o.insert("system".into(), json!(name));
-            o.insert("last".into(), json!(format!("#{}", last.hex())));
+            o.insert("last".into(), json!(hex(last)));
             Value::Object(o)
         }
     }
@@ -1505,12 +1506,16 @@ mod tests {
     }
 
     #[test]
-    fn font_dialog_ok_keeps_preset_and_system_colors() {
+    fn font_dialog_ok_keeps_the_text_color() {
+        use deckcraft_color::Rgba;
         let preset = ColorRef { base: ColorBase::Preset { name: "red".into() }, mods: vec![] }.with(ColorTransform::LumMod(50_000));
-        let system =
-            ColorRef { base: ColorBase::System { name: "windowText".into(), last: deckcraft_color::Rgba::rgb(0x12, 0x34, 0x56) }, mods: vec![] }
-                .with(ColorTransform::Alpha(60_000));
-        for color in [preset, system] {
+        let system = ColorRef { base: ColorBase::System { name: "windowText".into(), last: Rgba::rgb(0x12, 0x34, 0x56) }, mods: vec![] }
+            .with(ColorTransform::Alpha(60_000));
+        // A transform without a value, and a colour that is not opaque.
+        let inverted = ColorRef { base: ColorBase::Preset { name: "red".into() }, mods: vec![] }.with(ColorTransform::Inv);
+        let translucent = ColorRef { base: ColorBase::System { name: "windowText".into(), last: Rgba::rgba(0x12, 0x34, 0x56, 0x80) }, mods: vec![] };
+        let rgb = ColorRef::rgb(Rgba::rgba(0x12, 0x34, 0x56, 0x80));
+        for color in [preset, system, inverted, translucent, rgb] {
             let mut s = shape();
             let fill = Fill::Solid { color: color.clone() };
             format_run(&mut s, &|r| r.fill = Some(fill.clone())).unwrap();
