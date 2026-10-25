@@ -597,8 +597,15 @@ fn color_command_value(c: &deckcraft_model::ColorRef) -> Value {
             o.insert("scheme".into(), json!(slot.xml_name()));
             Value::Object(o)
         }
-        ColorBase::Preset { name } => json!(name),
-        ColorBase::System { last, .. } => json!(format!("#{}", last.hex())),
+        ColorBase::Preset { name } => {
+            o.insert("preset".into(), json!(name));
+            Value::Object(o)
+        }
+        ColorBase::System { name, last } => {
+            o.insert("system".into(), json!(name));
+            o.insert("last".into(), json!(format!("#{}", last.hex())));
+            Value::Object(o)
+        }
     }
 }
 
@@ -1495,6 +1502,24 @@ mod tests {
         let r = props(&s);
         assert_eq!(r.bold, Some(true));
         assert!(r.size.is_none() && r.fill.is_none());
+    }
+
+    #[test]
+    fn font_dialog_ok_keeps_preset_and_system_colors() {
+        let preset = ColorRef { base: ColorBase::Preset { name: "red".into() }, mods: vec![] }.with(ColorTransform::LumMod(50_000));
+        let system =
+            ColorRef { base: ColorBase::System { name: "windowText".into(), last: deckcraft_color::Rgba::rgb(0x12, 0x34, 0x56) }, mods: vec![] }
+                .with(ColorTransform::Alpha(60_000));
+        for color in [preset, system] {
+            let mut s = shape();
+            let fill = Fill::Solid { color: color.clone() };
+            format_run(&mut s, &|r| r.fill = Some(fill.clone())).unwrap();
+            s.ui_requests.clear();
+            s.execute("format.fontDialog", &json!({})).unwrap();
+            let Some(UiRequest::Dialog { params, .. }) = s.ui_requests.last().cloned() else { panic!("dialog request") };
+            s.execute("format.fontDialog", &json!({"color": params["color"]})).unwrap();
+            assert_eq!(props(&s).fill, Some(Fill::Solid { color }), "{}", params["color"]);
+        }
     }
 
     #[test]
