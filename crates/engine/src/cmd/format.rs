@@ -594,7 +594,7 @@ fn color_command_value(c: &deckcraft_model::ColorRef) -> Value {
         // `inv`, `comp` and `gray` have no value.
         o.insert(m.xml_name().to_string(), m.value().map_or(json!(true), |v| json!(v)));
     }
-    // `#RRGGBB`, or `#RRGGBBAA` for a colour that is not opaque.
+    // `#RRGGBB`, or `#RRGGBBAA` for a color that is not opaque.
     let hex = |c: &deckcraft_color::Rgba| if c.a == 255 { format!("#{}", c.hex()) } else { format!("#{}{:02X}", c.hex(), c.a) };
     match &c.base {
         ColorBase::Rgb { rgb } if o.is_empty() => json!(hex(rgb)),
@@ -1552,7 +1552,7 @@ mod tests {
         let preset = ColorRef { base: ColorBase::Preset { name: "red".into() }, mods: vec![] }.with(ColorTransform::LumMod(50_000));
         let system = ColorRef { base: ColorBase::System { name: "windowText".into(), last: Rgba::rgb(0x12, 0x34, 0x56) }, mods: vec![] }
             .with(ColorTransform::Alpha(60_000));
-        // A transform without a value, and a colour that is not opaque.
+        // A transform without a value, and a color that is not opaque.
         let inverted = ColorRef { base: ColorBase::Preset { name: "red".into() }, mods: vec![] }.with(ColorTransform::Inv);
         let translucent = ColorRef { base: ColorBase::System { name: "windowText".into(), last: Rgba::rgba(0x12, 0x34, 0x56, 0x80) }, mods: vec![] };
         let rgb = ColorRef::rgb(Rgba::rgba(0x12, 0x34, 0x56, 0x80));
