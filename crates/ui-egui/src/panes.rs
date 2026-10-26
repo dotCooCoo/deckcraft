@@ -566,23 +566,39 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
             }
             ui.add_space(8.0);
             ui.label(egui::RichText::new("Line").font(theme::bold(13.0)));
-            let none = matches!(sh.line.as_ref().and_then(|l| l.fill.as_ref()), Some(Fill::None));
+            let line_fill = sh.line.as_ref().and_then(|l| l.fill.as_ref());
+            let none = matches!(line_fill, Some(Fill::None));
+            // A line of its own without a fill of its own draws with the fill it inherits.
+            let line_gradient = match line_fill.or(effective_line.as_ref()) {
+                Some(Fill::Gradient(g)) if sh.line.is_some() => Some(g.clone()),
+                _ => None,
+            };
             if ui.radio(none, "No line").clicked() {
                 run(app, "shape.line", json!({"none": true}));
             }
-            if ui.radio(!none && sh.line.is_some(), "Solid line").clicked() {
+            if ui.radio(!none && line_gradient.is_none() && sh.line.is_some(), "Solid line").clicked() {
                 run(app, "shape.line", json!({"color": "tx1", "width": 1}));
+            }
+            if ui.radio(line_gradient.is_some(), "Gradient line").clicked() {
+                run(app, "shape.line", json!({"gradient": {"stops": [[0, "accent1"], [1, {"scheme": "accent1", "lumMod": 50000}]], "angle": 90}}));
             }
             if ui.radio(sh.line.is_none(), "Automatic").clicked() {
                 run(app, "shape.line", json!({"reset": true}));
             }
-            color_button(app, ui, "Color", Some("No Outline"), |c| match c {
-                Some(c) => ("shape.line".into(), json!({"color": cref_param(&c)})),
-                None => ("shape.line".into(), json!({"none": true})),
-            });
+            // The Color button sets a solid line; a gradient line takes its colors from its stops.
+            if line_gradient.is_none() {
+                color_button(app, ui, "Color", Some("No Outline"), |c| match c {
+                    Some(c) => ("shape.line".into(), json!({"color": cref_param(&c)})),
+                    None => ("shape.line".into(), json!({"none": true})),
+                });
+            }
+            if let Some(g) = &line_gradient
+                && let Some(ng) = crate::fillui::gradient_editor(ui, "line-grad", g, &scheme(app))
+            {
+                run(app, "shape.line", json!({"gradient": crate::fillui::gradient_json(&ng)}));
+            }
             // `shape.line {transparency}` changes a solid line (an automatic one through its
             // effective color).
-            let line_fill = sh.line.as_ref().and_then(|l| l.fill.as_ref());
             if let Some(seed) = line_transparency_percent(line_fill, effective_line.as_ref()) {
                 ui.horizontal(|ui| {
                     let label = ui.label("Transparency");
@@ -1726,6 +1742,55 @@ mod tests {
         h.run_steps(3);
         let shown = slider_values(&h);
         assert!(shown.iter().any(|v| (*v - 75.0).abs() < 0.5), "a phClr line on a 25% opaque style color should show 75%, got {shown:?}");
+    }
+
+    /// Format Shape ▸ Line ▸ Gradient line gives the line a gradient and shows the gradient editor,
+    /// whose edits change the line.
+    #[test]
+    fn gradient_line_option_sets_and_edits_the_lines_gradient() {
+        use egui::accesskit::{Role, Toggled};
+        let mut h = fill_pane(Some(json!({"none": true})));
+        let line_stops = |h: &Harness<'_, SlideApp>| {
+            let doc = h.state().session.active().unwrap();
+            match doc.selected_shapes()[0].line.as_ref().and_then(|l| l.fill.as_ref()) {
+                Some(Fill::Gradient(g)) => g.stops.len(),
+                other => panic!("expected a gradient line, got {other:?}"),
+            }
+        };
+        // The Line section's radio buttons come after the Fill section's, which has its own Automatic.
+        let chosen = |h: &Harness<'_, SlideApp>, label: &str| {
+            h.query_all_by_role_and_label(Role::RadioButton, label).last().unwrap().accesskit_node().toggled() == Some(Toggled::True)
+        };
+        let bars = |h: &Harness<'_, SlideApp>| h.query_all_by_label("Gradient bar").count();
+        assert!(chosen(&h, "Automatic"));
+        assert!(!chosen(&h, "Gradient line"));
+        assert_eq!(bars(&h), 0, "no fill and an automatic line, so no gradient editor");
+
+        h.get_by_role_and_label(Role::RadioButton, "Gradient line").click();
+        h.run_steps(3);
+        assert_eq!(line_stops(&h), 2);
+        assert!(chosen(&h, "Gradient line"));
+        assert!(!chosen(&h, "Solid line"));
+        assert_eq!(bars(&h), 1, "the line's gradient editor");
+        assert_eq!(color_buttons(&h), 0, "a gradient line takes its colors from its stops");
+
+        // An edit in the editor changes the line, in one undo step.
+        let three = json!({"stops": [[0, "accent1"], [0.5, "accent2"], [1, "accent3"]], "angle": 90});
+        h.state_mut().session.execute("shape.line", &json!({"gradient": three})).unwrap();
+        h.run_steps(3);
+        assert_eq!(line_stops(&h), 3);
+        h.get_by_role_and_label(Role::Button, "Remove stop").click();
+        h.run_steps(3);
+        assert_eq!(line_stops(&h), 2);
+        h.state_mut().session.execute("edit.undo", &json!({})).unwrap();
+        h.run_steps(2);
+        assert_eq!(line_stops(&h), 3);
+
+        h.get_by_role_and_label(Role::RadioButton, "Solid line").click();
+        h.run_steps(3);
+        assert!(chosen(&h, "Solid line"));
+        assert_eq!(bars(&h), 0);
+        assert_eq!(color_buttons(&h), 1, "the solid line's Color button");
     }
 
     /// A blank slide with one selected rectangle, its fill set by `fill` (none for an automatic fill),

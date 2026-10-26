@@ -99,7 +99,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Shape Outline",
             ["Shape Format", "Shape Styles"],
             None,
-            "{color?, none?, transparency?: 0..1 (a solid line), width?: pt, dash?: solid|dot|dash|lgDash|dashDot|sysDot|sysDash, cap?: flat|round|square, join?: round|bevel|miter, compound?: single|double|thickThin|thinThick|triple, head?: none|triangle|stealth|diamond|oval|arrow, tail?, headSize?: sm|med|lg, tailSize?, reset?, ids?}; a group also formats its members",
+            "{color?, none?, gradient?: {stops: [[pos, color]], angle?, kind?: linear|radial|rectangular|path}, transparency?: 0..1 (a solid line), width?: pt, dash?: solid|dot|dash|lgDash|dashDot|sysDot|sysDash, cap?: flat|round|square, join?: round|bevel|miter, compound?: single|double|thickThin|thinThick|triple, head?: none|triangle|stealth|diamond|oval|arrow, tail?, headSize?: sm|med|lg, tailSize?, reset?, ids?}; a group also formats its members",
             has_selection,
             line
         ),
@@ -701,6 +701,10 @@ fn line(s: &mut Session, p: &Value) -> Result<Value> {
     let reset = bool_or(p, "reset", false);
     let none = bool_or(p, "none", false);
     let color = color_param(p, "color");
+    let gradient = match p.get("gradient") {
+        Some(g) => Some(gradient_param(g).ok_or_else(|| bad("shape.line", "gradient needs at least two `stops`: [[0, \"#fff\"], [1, \"#000\"]]"))?),
+        None => None,
+    };
     let width = f64_param(p, "width").map(|w| w.clamp(0.0, 1584.0));
     let dash = str_param(p, "dash").map(|d| Dash::Preset { name: d.to_string() });
     let head = str_param(p, "head").map(line_end);
@@ -753,6 +757,9 @@ fn line(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if let Some(c) = &color {
             l.fill = Some(Fill::solid(c.clone()));
+        }
+        if let Some(g) = &gradient {
+            l.fill = Some(Fill::Gradient(g.clone()));
         }
         if width.is_some() {
             l.width = width;
@@ -1689,6 +1696,44 @@ mod tests {
         // 0% takes the alpha off again.
         s.execute("shape.line", &json!({"ids": [solid], "transparency": 0.0})).unwrap();
         assert_eq!(line(&s, solid).unwrap().fill, Some(Fill::solid(red)));
+    }
+
+    #[test]
+    fn line_gradient_sets_a_gradient_line_in_one_undo_step_and_survives_a_save() {
+        let mut s = Session::with_new();
+        let id = ShapeId(s.execute("shape.insert", &json!({"preset": "rect", "rect": [40, 100, 80, 60]})).unwrap()["id"].as_u64().unwrap() as u32);
+        s.execute("shape.line", &json!({"ids": [id], "color": "#ff0000", "width": 4, "dash": "dash"})).unwrap();
+        let line = |s: &Session| s.doc().unwrap().shape(id).unwrap().line.clone().unwrap();
+        let before = serde_json::to_value(&s.doc().unwrap().doc).unwrap();
+
+        let gradient = json!({"stops": [[0, "accent1"], [0.5, "#00ff00"], [1, "accent2"]], "kind": "linear", "angle": 45});
+        s.execute("shape.line", &json!({"ids": [id], "gradient": gradient})).unwrap();
+        let l = line(&s);
+        let Some(Fill::Gradient(g)) = &l.fill else { panic!("a gradient line, got {:?}", l.fill) };
+        assert_eq!(g.stops.len(), 3);
+        assert_eq!(g.stops[1].color, ColorRef::rgb(Rgba::rgb(0, 255, 0)));
+        assert_eq!(g.shape, GradientShape::Linear { angle: 45.0, scaled: false });
+        // The width and dash stay.
+        assert_eq!(l.width, Some(4.0));
+        assert_eq!(l.dash, Some(Dash::Preset { name: "dash".into() }));
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&s.doc().unwrap().doc).unwrap(), before);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(line(&s), l);
+        // Transparency is for a solid line; a gradient line keeps its stops.
+        s.execute("shape.line", &json!({"ids": [id], "transparency": 0.5})).unwrap();
+        assert_eq!(line(&s), l);
+
+        // The gradient line survives a PPTX save and reopen.
+        let bytes = deckcraft_pptx::export(&s.doc().unwrap().doc).unwrap();
+        let back = deckcraft_pptx::import(&bytes).unwrap();
+        let slide = s.doc().unwrap().selection.slide;
+        let saved = back.slides[slide].shape(id).and_then(|sh| sh.line.clone()).and_then(|l| l.fill);
+        assert_eq!(saved, l.fill);
+
+        // A gradient with fewer than two stops is refused and changes nothing.
+        assert!(s.execute("shape.line", &json!({"ids": [id], "gradient": {"stops": [[0, "accent1"]]}})).is_err());
+        assert_eq!(line(&s), l);
     }
 
     #[test]
