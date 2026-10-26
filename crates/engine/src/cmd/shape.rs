@@ -799,14 +799,14 @@ fn line(s: &mut Session, p: &Value) -> Result<Value> {
             let base = l.fill.clone().or_else(|| ctx_line.get(&sh.id).cloned().flatten());
             if let Some(Fill::Solid { mut color }) = base {
                 // The new transparency replaces any alpha: the alpha transforms, and the alpha an
-                // inherited color carries in its resolved RGBA. `phClr` takes the style's color,
-                // which can carry an alpha of its own, so 0% sets an explicit opaque alpha on it.
+                // inherited color carries in its resolved RGBA. A theme, preset or system color
+                // (`phClr` included) resolves to an RGBA that can carry an alpha of its own, so 0%
+                // sets an explicit opaque alpha on it.
                 color.mods.retain(|m| !matches!(m, ColorTransform::Alpha(_) | ColorTransform::AlphaMod(_) | ColorTransform::AlphaOff(_)));
                 if let ColorBase::Rgb { rgb } = &mut color.base {
                     rgb.a = 255;
                 }
-                let placeholder = matches!(color.base, ColorBase::Scheme { slot: SchemeSlot::PhClr });
-                if t > 0.0 || placeholder {
+                if t > 0.0 || !matches!(color.base, ColorBase::Rgb { .. }) {
                     color.mods.push(ColorTransform::Alpha(((1.0 - t.clamp(0.0, 1.0)) * 100_000.0).round() as i32));
                 }
                 l.fill = Some(Fill::Solid { color });
@@ -1727,7 +1727,19 @@ mod tests {
         .unwrap();
         s.execute("shape.line", &json!({"ids": [id], "transparency": 0.0})).unwrap();
         let own = s.doc().unwrap().shape(id).unwrap().line.clone().unwrap().fill;
-        assert_eq!(own, Some(Fill::solid(ColorRef::scheme(SchemeSlot::Accent1))));
+        assert_eq!(own, Some(Fill::solid(ColorRef::scheme(SchemeSlot::Accent1).with(ColorTransform::Alpha(100_000)))));
+
+        // A theme color can carry an alpha of its own, so 0% on a theme color is opaque as well.
+        s.execute("design.colors", &json!({"colors": {"accent1": "#0000FF80"}})).unwrap();
+        s.edit(|doc, sel| {
+            let sh = std::sync::Arc::make_mut(&mut doc.slides[sel.slide]).shape_mut(id).unwrap();
+            sh.line.as_mut().unwrap().fill = Some(Fill::solid(ColorRef::scheme(SchemeSlot::Accent1)));
+            Ok(())
+        })
+        .unwrap();
+        s.execute("shape.line", &json!({"ids": [id], "transparency": 0.0})).unwrap();
+        let Some(Fill::Solid { color }) = effective(&s) else { panic!("solid line, got {:?}", effective(&s)) };
+        assert!(matches!(color.base, ColorBase::Rgb { rgb } if rgb.a == 255), "{color:?}");
 
         // `phClr` takes the style's color and its alpha, so 0% sets an explicit opaque alpha.
         s.edit(|doc, sel| {
