@@ -1,7 +1,8 @@
 //! Task panes on the right: Format Shape, Format Background, Animation, Selection, Comments and
 //! Design Ideas.
 
-use deckcraft_model::{AnimClass, AnimStart, Fill, ShapeKind};
+use deckcraft_color::ColorTransform;
+use deckcraft_model::{AnimClass, AnimStart, ColorBase, Fill, ShapeKind};
 use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
 use serde_json::{Value, json};
 
@@ -165,6 +166,33 @@ fn solid_fill_transparency_percent(fill: Option<&Fill>) -> f32 {
     ((1.0 - color.alpha()) * 100.0) as f32
 }
 
+/// Percent transparency (0 = opaque) of the line a shape draws: its own fill when it has one,
+/// otherwise `effective` (the line resolved to RGBA, inherited or not). `None` when that line is
+/// not solid, so Format Shape ▸ Line shows no Transparency row.
+fn line_transparency_percent(own: Option<&Fill>, effective: Option<&Fill>) -> Option<f32> {
+    let Some(Fill::Solid { color }) = own.or(effective) else {
+        return None;
+    };
+    let rgba_alpha = |c: &deckcraft_model::ColorRef| match &c.base {
+        ColorBase::Rgb { rgb } => f64::from(rgb.a) / 255.0,
+        _ => 1.0,
+    };
+    let set = color.mods.iter().any(|m| matches!(m, ColorTransform::Alpha(_)));
+    let relative = color.mods.iter().any(|m| matches!(m, ColorTransform::AlphaMod(_) | ColorTransform::AlphaOff(_)));
+    let alpha = if set && !relative {
+        color.alpha()
+    } else {
+        // `alphaMod`, `alphaOff` and the alpha of the style color `phClr` takes apply only in
+        // the resolved color.
+        let resolved = match effective {
+            Some(Fill::Solid { color: c }) => c,
+            _ => color,
+        };
+        rgba_alpha(resolved)
+    };
+    Some(((1.0 - alpha) * 100.0) as f32)
+}
+
 /// Fraction to pass to `shape.fill` when the slider moved. An unchanged value (a focus
 /// loss, or switching to another shape) is `None`, so the pane does not rewrite the fill.
 fn fill_transparency_to_apply(shown_percent: f32, seed_percent: f32) -> Option<f64> {
@@ -213,6 +241,7 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
         return;
     };
     let x = deckcraft_engine::cmd::xfrm_of(&st.doc, &st.selection, &sh);
+    let effective_line = deckcraft_engine::cmd::shape::effective_line_fill(&st.doc, &st.selection, &sh);
     let uid = st.uid;
     // Tabs as icons.
     ui.horizontal(|ui| {
@@ -551,6 +580,25 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
                 Some(c) => ("shape.line".into(), json!({"color": cref_param(&c)})),
                 None => ("shape.line".into(), json!({"none": true})),
             });
+            // `shape.line {transparency}` changes a solid line (an automatic one through its
+            // effective color).
+            let line_fill = sh.line.as_ref().and_then(|l| l.fill.as_ref());
+            if let Some(seed) = line_transparency_percent(line_fill, effective_line.as_ref()) {
+                ui.horizontal(|ui| {
+                    let label = ui.label("Transparency");
+                    let id = ui.scope_id().with(("ltr", sh.id.0));
+                    let mut v: f32 = ui.data_mut(|d| d.get_temp(id).unwrap_or(seed));
+                    let r = ui.add(egui::Slider::new(&mut v, 0.0..=100.0).suffix("%")).labelled_by(label.id);
+                    if r.drag_stopped() || r.lost_focus() {
+                        if let Some(t) = fill_transparency_to_apply(v, seed) {
+                            run(app, "shape.line", json!({"transparency": t}));
+                        }
+                        ui.data_mut(|d| d.remove::<f32>(id));
+                    } else if r.dragged() || r.changed() {
+                        ui.data_mut(|d| d.insert_temp(id, v));
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 ui.label("Width");
                 let w = sh.line.as_ref().and_then(|l| l.width).unwrap_or(0.75);
@@ -1589,11 +1637,95 @@ mod tests {
         // 0.37 exposes the slider's numeric entry as a SpinButton with the same name; target the
         // Slider itself so the click lands on the slider, not its text field. A click at its
         // middle is a real edit (50%), not a side effect of opening the pane or selecting b.
-        h.get_by_role_and_label(egui::accesskit::Role::Slider, "Transparency").click();
+        // The Fill section's slider comes before the Line section's.
+        h.query_all_by_role_and_label(egui::accesskit::Role::Slider, "Transparency").next().unwrap().click();
         h.run_steps(2);
         assert_eq!(solid_alpha(h.state(), b), Some(50_000));
         let changed: Vec<f64> = slider_values(&h);
         assert!(changed.iter().any(|v| (*v - 50.0).abs() < 0.5), "the changed slider shows 50%, got {changed:?}");
+    }
+
+    /// Format Shape ▸ Line ▸ Transparency shows a solid line's transparency and sets it in one
+    /// undo step; No line has no Transparency row.
+    #[test]
+    fn line_transparency_slider_shows_and_sets_the_lines_transparency() {
+        let mut h = fill_pane(Some(json!({"none": true})));
+        let line_alpha = |h: &Harness<'_, SlideApp>| {
+            let doc = h.state().session.active().unwrap();
+            match doc.selected_shapes()[0].line.as_ref().and_then(|l| l.fill.as_ref()) {
+                Some(Fill::Solid { color }) => color.mods.iter().find_map(|m| match m {
+                    ColorTransform::Alpha(v) => Some(*v),
+                    _ => None,
+                }),
+                other => panic!("expected a solid line, got {other:?}"),
+            }
+        };
+        h.state_mut().session.execute("shape.line", &json!({"color": "#ff0000", "transparency": 0.4})).unwrap();
+        h.run_steps(3);
+        let rows = || h.query_all_by_role_and_label(egui::accesskit::Role::Slider, "Transparency").count();
+        assert_eq!(rows(), 1, "no fill, so the one Transparency row is the line's");
+        let shown = slider_values(&h);
+        assert!(shown.iter().any(|v| (*v - 40.0).abs() < 0.5), "a 40% transparent line should show 40%, got {shown:?}");
+
+        h.get_by_role_and_label(egui::accesskit::Role::Slider, "Transparency").click();
+        h.run_steps(2);
+        assert_eq!(line_alpha(&h), Some(50_000));
+        h.state_mut().session.execute("edit.undo", &json!({})).unwrap();
+        h.run_steps(2);
+        assert_eq!(line_alpha(&h), Some(60_000));
+
+        h.state_mut().session.execute("shape.line", &json!({"none": true})).unwrap();
+        h.run_steps(3);
+        assert_eq!(h.query_all_by_role_and_label(egui::accesskit::Role::Slider, "Transparency").count(), 0, "No line");
+    }
+
+    /// An automatic line shows the transparency it inherits from the theme's line style.
+    #[test]
+    fn line_transparency_slider_shows_an_inherited_lines_transparency() {
+        let mut h = fill_pane(Some(json!({"none": true})));
+        h.state_mut()
+            .session
+            .edit(|doc, _| {
+                for l in &mut std::sync::Arc::make_mut(&mut doc.masters[0]).theme.format.lines {
+                    l.fill = Some(Fill::solid(ColorRef::rgb(deckcraft_color::Rgba::rgb(0, 0, 255)).with(ColorTransform::Alpha(50_000))));
+                }
+                Ok(())
+            })
+            .unwrap();
+        h.run_steps(3);
+        assert!(h.state().session.active().unwrap().selected_shapes()[0].line.is_none(), "the line is automatic");
+        let shown = slider_values(&h);
+        assert!(shown.iter().any(|v| (*v - 50.0).abs() < 0.5), "a line inheriting 50% should show 50%, got {shown:?}");
+
+        // A line's own `alphaMod` shows as the transparency it draws with.
+        h.state_mut()
+            .session
+            .edit(|doc, sel| {
+                let id = sel.shapes[0];
+                let sh = std::sync::Arc::make_mut(&mut doc.slides[sel.slide]).shape_mut(id).unwrap();
+                let color = ColorRef::scheme(SchemeSlot::Accent1).with(ColorTransform::AlphaMod(30_000));
+                sh.line = Some(deckcraft_model::Line { fill: Some(Fill::solid(color)), ..Default::default() });
+                Ok(())
+            })
+            .unwrap();
+        h.run_steps(3);
+        let shown = slider_values(&h);
+        assert!(shown.iter().any(|v| (*v - 70.0).abs() < 0.5), "alphaMod 30% should show 70%, got {shown:?}");
+
+        // A `phClr` line shows the alpha of the style color it takes.
+        h.state_mut()
+            .session
+            .edit(|doc, sel| {
+                let id = sel.shapes[0];
+                let sh = std::sync::Arc::make_mut(&mut doc.slides[sel.slide]).shape_mut(id).unwrap();
+                sh.line = Some(deckcraft_model::Line { fill: Some(Fill::solid(ColorRef::scheme(SchemeSlot::PhClr))), ..Default::default() });
+                sh.style.as_mut().unwrap().line_ref.1 = ColorRef::rgb(deckcraft_color::Rgba::rgb(0, 0, 255)).with(ColorTransform::Alpha(25_000));
+                Ok(())
+            })
+            .unwrap();
+        h.run_steps(3);
+        let shown = slider_values(&h);
+        assert!(shown.iter().any(|v| (*v - 75.0).abs() < 0.5), "a phClr line on a 25% opaque style color should show 75%, got {shown:?}");
     }
 
     /// A blank slide with one selected rectangle, its fill set by `fill` (none for an automatic fill),
@@ -1635,12 +1767,13 @@ mod tests {
     fn fill_color_and_transparency_show_only_where_they_change_the_fill() {
         let gradient = json!({"gradient": {"stops": [[0, "accent1"], [1, "accent2"]], "angle": 90}});
         for (name, fill, color, transparency) in [
-            ("automatic", None, true, 1),
-            ("solid", Some(json!({"color": "accent2"})), true, 1),
-            ("no fill", Some(json!({"none": true})), false, 0),
-            // The one Transparency row left is the selected gradient stop's.
-            ("gradient", Some(gradient), false, 1),
-            ("picture", Some(picture_fill(0.0)), false, 1),
+            // Each count includes the Line section's row for the rectangle's automatic line.
+            ("automatic", None, true, 2),
+            ("solid", Some(json!({"color": "accent2"})), true, 2),
+            ("no fill", Some(json!({"none": true})), false, 1),
+            // The other Transparency row is the selected gradient stop's.
+            ("gradient", Some(gradient), false, 2),
+            ("picture", Some(picture_fill(0.0)), false, 2),
         ] {
             let h = fill_pane(fill);
             let fill_color = color_buttons(&h) == 2;
