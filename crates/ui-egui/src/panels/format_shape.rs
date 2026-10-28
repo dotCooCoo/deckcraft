@@ -1,7 +1,7 @@
 use deckcraft_color::ColorTransform;
 use deckcraft_model::ColorBase;
 
-use super::*;
+use super::{Fill, Icon, ShapeKind, SlideApp, Tokens, Ui, color_button, cref_param, json, run, scheme, theme, vec2, widgets};
 
 /// Percent transparency (0 = opaque) of a solid fill, the same number `shape.fill`'s
 /// `transparency` parameter writes as an alpha transform. Anything else (no fill, a
@@ -52,6 +52,29 @@ fn doc_revision(app: &SlideApp) -> u64 {
     app.session.active().map_or(0, |d| d.revision)
 }
 
+/// Format Shape ▸ Line's Transparency row. `shape.line {transparency}` changes a solid line (an
+/// automatic one through its effective color).
+fn line_transparency_row(app: &mut SlideApp, ui: &mut Ui, sh: &deckcraft_model::Shape, effective_line: Option<&Fill>, revision: u64) {
+    let line_fill = sh.line.as_ref().and_then(|l| l.fill.as_ref());
+    let Some(seed) = line_transparency_percent(line_fill, effective_line) else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        let label = ui.label("Transparency");
+        let id = ui.scope_id().with(("ltr", sh.id.0));
+        let mut v = held_value(ui, id, revision, seed);
+        let r = ui.add(egui::Slider::new(&mut v, 0.0..=100.0).suffix("%")).labelled_by(label.id);
+        if r.drag_stopped() || r.lost_focus() {
+            if let Some(t) = fill_transparency_to_apply(v, seed) {
+                run(app, "shape.line", json!({"transparency": t}));
+            }
+            ui.data_mut(|d| d.remove::<(u64, f32)>(id));
+        } else if r.dragged() || r.changed() {
+            ui.data_mut(|d| d.insert_temp(id, (revision, v)));
+        }
+    });
+}
+
 /// Fraction to pass to `shape.fill` when the slider moved. An unchanged value (a focus
 /// loss, or switching to another shape) is `None`, so the pane does not rewrite the fill.
 pub(super) fn fill_transparency_to_apply(shown_percent: f32, seed_percent: f32) -> Option<f64> {
@@ -65,18 +88,7 @@ pub(super) fn fill_transparency_to_apply(shown_percent: f32, seed_percent: f32) 
     Some(f64::from(shown) / 100.0)
 }
 
-/// Render the shape-format pane with fill/line, effects, size/properties, text, and picture tabs.
-pub(super) fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
-    let t = Tokens::get(ui.ctx());
-    let Some(st) = app.session.active() else { return };
-    let Some(sh) = st.selected_shapes().first().map(|s| (*s).clone()) else {
-        ui.label(egui::RichText::new("Select a shape to format it.").color(t.text_dim));
-        return;
-    };
-    let x = deckcraft_engine::cmd::xfrm_of(&st.doc, &st.selection, &sh);
-    let effective_line = deckcraft_engine::cmd::shape::effective_line_fill(&st.doc, &st.selection, &sh);
-    let uid = st.uid;
-    let revision = st.revision;
+fn format_tabs(app: &mut SlideApp, ui: &mut Ui, sh: &deckcraft_model::Shape) {
     // Tabs as icons.
     ui.horizontal(|ui| {
         for (tab, icon, tip) in [
@@ -96,100 +108,112 @@ pub(super) fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
             app.ui.format_tab = "picture".into();
         }
     });
-    ui.separator();
-    match app.ui.format_tab.as_str() {
-        "effects" => {
-            ui.label(egui::RichText::new("Shadow").font(theme::bold(13.0)));
-            ui.horizontal_wrapped(|ui| {
-                for (l, v) in [
-                    ("None", "none"),
-                    ("Outer", "outer"),
-                    ("Bottom", "bottom"),
-                    ("Center", "center"),
-                    ("Inner", "inner"),
-                    ("Perspective", "perspective"),
-                ] {
-                    if ui.button(l).clicked() {
-                        run(app, "shape.effects", json!({"shadow": v}));
-                    }
-                }
-            });
-            let fx = sh.effects.clone().unwrap_or_default();
-            let shadow = fx.outer_shadow.as_ref().or(fx.inner_shadow.as_ref());
-            if let Some(sw) = shadow {
-                color_button(app, ui, "Color", None, |c| ("shape.effects".into(), json!({"shadowProps": {"color": c.as_ref().map(cref_param)}})));
-                fx_slider(
-                    app,
-                    ui,
-                    ("shadow", sh.id.0, "t"),
-                    "Transparency",
-                    (1.0 - sw.color.alpha()) * 100.0,
-                    0.0..=100.0,
-                    "%",
-                    "shadowProps",
-                    "transparency",
-                    0.01,
-                );
-                fx_slider(app, ui, ("shadow", sh.id.0, "b"), "Blur", sw.blur, 0.0..=100.0, " pt", "shadowProps", "blur", 1.0);
-                fx_slider(app, ui, ("shadow", sh.id.0, "a"), "Angle", sw.dir, 0.0..=359.0, "°", "shadowProps", "dir", 1.0);
-                fx_slider(app, ui, ("shadow", sh.id.0, "d"), "Distance", sw.dist, 0.0..=200.0, " pt", "shadowProps", "dist", 1.0);
-            }
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("Reflection").font(theme::bold(13.0)));
-            ui.horizontal_wrapped(|ui| {
-                for (l, v) in [("None", "none"), ("Tight", "tight"), ("Half", "half"), ("Full", "full")] {
-                    if ui.button(l).clicked() {
-                        run(app, "shape.effects", json!({"reflection": v}));
-                    }
-                }
-            });
-            if let Some(r) = &fx.reflection {
-                fx_slider(
-                    app,
-                    ui,
-                    ("refl", sh.id.0, "t"),
-                    "Transparency",
-                    (1.0 - r.start_alpha) * 100.0,
-                    0.0..=100.0,
-                    "%",
-                    "reflectionProps",
-                    "transparency",
-                    0.01,
-                );
-                fx_slider(app, ui, ("refl", sh.id.0, "s"), "Size", r.end_pos * 100.0, 0.0..=100.0, "%", "reflectionProps", "size", 0.01);
-                fx_slider(app, ui, ("refl", sh.id.0, "d"), "Distance", r.dist, 0.0..=100.0, " pt", "reflectionProps", "dist", 1.0);
-                fx_slider(app, ui, ("refl", sh.id.0, "b"), "Blur", r.blur, 0.0..=100.0, " pt", "reflectionProps", "blur", 1.0);
-            }
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("Glow").font(theme::bold(13.0)));
-            let radius = fx.glow.as_ref().map_or(0.0, |g| g.radius);
-            fx_slider(app, ui, ("glow", sh.id.0, "r"), "Size", radius, 0.0..=150.0, " pt", "glowProps", "radius", 1.0);
-            if let Some(g) = &fx.glow {
-                color_button(app, ui, "Color", None, |c| ("shape.effects".into(), json!({"glowProps": {"color": c.as_ref().map(cref_param)}})));
-                fx_slider(
-                    app,
-                    ui,
-                    ("glow", sh.id.0, "t"),
-                    "Transparency",
-                    (1.0 - g.color.alpha()) * 100.0,
-                    0.0..=100.0,
-                    "%",
-                    "glowProps",
-                    "transparency",
-                    0.01,
-                );
-            }
-            ui.label(egui::RichText::new("Soft Edges").font(theme::bold(13.0)));
-            let mut s = sh.effects.as_ref().and_then(|e| e.soft_edge).unwrap_or(0.0);
-            if ui.add(egui::Slider::new(&mut s, 0.0..=50.0).text("size (pt)")).drag_stopped() {
-                run(app, "shape.effects", json!({"softEdges": s}));
-            }
-            let raw3d = sh.effects.as_ref().and_then(|e| e.raw3d.clone());
-            three_d_options(app, ui, sh.id.0, raw3d.as_deref());
-            if ui.button("Reset Effects").clicked() {
-                run(app, "shape.effects", json!({"reset": true}));
+}
+
+fn effects_tab(app: &mut SlideApp, ui: &mut Ui, sh: &deckcraft_model::Shape) {
+    ui.label(egui::RichText::new("Shadow").font(theme::bold(13.0)));
+    ui.horizontal_wrapped(|ui| {
+        for (l, v) in
+            [("None", "none"), ("Outer", "outer"), ("Bottom", "bottom"), ("Center", "center"), ("Inner", "inner"), ("Perspective", "perspective")]
+        {
+            if ui.button(l).clicked() {
+                run(app, "shape.effects", json!({"shadow": v}));
             }
         }
+    });
+    let fx = sh.effects.clone().unwrap_or_default();
+    let shadow = fx.outer_shadow.as_ref().or(fx.inner_shadow.as_ref());
+    if let Some(sw) = shadow {
+        color_button(app, ui, "Color", None, |c| ("shape.effects".into(), json!({"shadowProps": {"color": c.as_ref().map(cref_param)}})));
+        fx_slider(
+            app,
+            ui,
+            ("shadow", sh.id.0, "t"),
+            "Transparency",
+            (1.0 - sw.color.alpha()) * 100.0,
+            0.0..=100.0,
+            "%",
+            "shadowProps",
+            "transparency",
+            0.01,
+        );
+        fx_slider(app, ui, ("shadow", sh.id.0, "b"), "Blur", sw.blur, 0.0..=100.0, " pt", "shadowProps", "blur", 1.0);
+        fx_slider(app, ui, ("shadow", sh.id.0, "a"), "Angle", sw.dir, 0.0..=359.0, "°", "shadowProps", "dir", 1.0);
+        fx_slider(app, ui, ("shadow", sh.id.0, "d"), "Distance", sw.dist, 0.0..=200.0, " pt", "shadowProps", "dist", 1.0);
+    }
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new("Reflection").font(theme::bold(13.0)));
+    ui.horizontal_wrapped(|ui| {
+        for (l, v) in [("None", "none"), ("Tight", "tight"), ("Half", "half"), ("Full", "full")] {
+            if ui.button(l).clicked() {
+                run(app, "shape.effects", json!({"reflection": v}));
+            }
+        }
+    });
+    if let Some(r) = &fx.reflection {
+        fx_slider(
+            app,
+            ui,
+            ("refl", sh.id.0, "t"),
+            "Transparency",
+            (1.0 - r.start_alpha) * 100.0,
+            0.0..=100.0,
+            "%",
+            "reflectionProps",
+            "transparency",
+            0.01,
+        );
+        fx_slider(app, ui, ("refl", sh.id.0, "s"), "Size", r.end_pos * 100.0, 0.0..=100.0, "%", "reflectionProps", "size", 0.01);
+        fx_slider(app, ui, ("refl", sh.id.0, "d"), "Distance", r.dist, 0.0..=100.0, " pt", "reflectionProps", "dist", 1.0);
+        fx_slider(app, ui, ("refl", sh.id.0, "b"), "Blur", r.blur, 0.0..=100.0, " pt", "reflectionProps", "blur", 1.0);
+    }
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new("Glow").font(theme::bold(13.0)));
+    let radius = fx.glow.as_ref().map_or(0.0, |g| g.radius);
+    fx_slider(app, ui, ("glow", sh.id.0, "r"), "Size", radius, 0.0..=150.0, " pt", "glowProps", "radius", 1.0);
+    if let Some(g) = &fx.glow {
+        color_button(app, ui, "Color", None, |c| ("shape.effects".into(), json!({"glowProps": {"color": c.as_ref().map(cref_param)}})));
+        fx_slider(
+            app,
+            ui,
+            ("glow", sh.id.0, "t"),
+            "Transparency",
+            (1.0 - g.color.alpha()) * 100.0,
+            0.0..=100.0,
+            "%",
+            "glowProps",
+            "transparency",
+            0.01,
+        );
+    }
+    ui.label(egui::RichText::new("Soft Edges").font(theme::bold(13.0)));
+    let mut s = sh.effects.as_ref().and_then(|e| e.soft_edge).unwrap_or(0.0);
+    if ui.add(egui::Slider::new(&mut s, 0.0..=50.0).text("size (pt)")).drag_stopped() {
+        run(app, "shape.effects", json!({"softEdges": s}));
+    }
+    let raw3d = sh.effects.as_ref().and_then(|e| e.raw3d.clone());
+    three_d_options(app, ui, sh.id.0, raw3d.as_deref());
+    if ui.button("Reset Effects").clicked() {
+        run(app, "shape.effects", json!({"reset": true}));
+    }
+}
+
+/// Render the shape-format pane with fill/line, effects, size/properties, text, and picture tabs.
+pub(super) fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
+    let t = Tokens::get(ui.ctx());
+    let Some(st) = app.session.active() else { return };
+    let Some(sh) = st.selected_shapes().first().map(|s| (*s).clone()) else {
+        ui.label(egui::RichText::new("Select a shape to format it.").color(t.text_dim));
+        return;
+    };
+    let x = deckcraft_engine::cmd::xfrm_of(&st.doc, &st.selection, &sh);
+    let effective_line = deckcraft_engine::cmd::shape::effective_line_fill(&st.doc, &st.selection, &sh);
+    let uid = st.uid;
+    let revision = st.revision;
+    format_tabs(app, ui, &sh);
+    ui.separator();
+    match app.ui.format_tab.as_str() {
+        "effects" => effects_tab(app, ui, &sh),
         "size" => {
             let lock_id = egui::Id::unique("fmt-lock-aspect");
             let mut lock: bool = ui.data_mut(|d| d.get_temp(lock_id).unwrap_or(false));
@@ -414,25 +438,7 @@ pub(super) fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
                 Some(c) => ("shape.line".into(), json!({"color": cref_param(&c)})),
                 None => ("shape.line".into(), json!({"none": true})),
             });
-            // `shape.line {transparency}` changes a solid line (an automatic one through its
-            // effective color).
-            let line_fill = sh.line.as_ref().and_then(|l| l.fill.as_ref());
-            if let Some(seed) = line_transparency_percent(line_fill, effective_line.as_ref()) {
-                ui.horizontal(|ui| {
-                    let label = ui.label("Transparency");
-                    let id = ui.scope_id().with(("ltr", sh.id.0));
-                    let mut v = held_value(ui, id, revision, seed);
-                    let r = ui.add(egui::Slider::new(&mut v, 0.0..=100.0).suffix("%")).labelled_by(label.id);
-                    if r.drag_stopped() || r.lost_focus() {
-                        if let Some(t) = fill_transparency_to_apply(v, seed) {
-                            run(app, "shape.line", json!({"transparency": t}));
-                        }
-                        ui.data_mut(|d| d.remove::<(u64, f32)>(id));
-                    } else if r.dragged() || r.changed() {
-                        ui.data_mut(|d| d.insert_temp(id, (revision, v)));
-                    }
-                });
-            }
+            line_transparency_row(app, ui, &sh, effective_line.as_ref(), revision);
             ui.horizontal(|ui| {
                 ui.label("Width");
                 let w = sh.line.as_ref().and_then(|l| l.width).unwrap_or(0.75);
