@@ -491,6 +491,14 @@ mod tests {
         // A call that changes nothing (no end arrow to size) leaves the line automatic.
         s.execute("shape.line", &json!({"ids": [auto], "tailSize": "lg"})).unwrap();
         assert_eq!(line(&s, auto), None);
+        // 0% on an opaque inherited line leaves its color inherited; other parameters still apply.
+        s.execute("shape.line", &json!({"ids": [auto], "transparency": 0.0})).unwrap();
+        assert_eq!(line(&s, auto), None);
+        s.execute("shape.line", &json!({"ids": [auto], "transparency": 0.0, "cap": "round"})).unwrap();
+        let capped = line(&s, auto).unwrap();
+        assert!(capped.fill.is_none() && capped.cap.is_some(), "{capped:?}");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(line(&s, auto), None);
         let before = serde_json::to_value(&s.doc().unwrap().doc).unwrap();
 
         s.execute("shape.line", &json!({"ids": [auto, solid, none], "transparency": 0.4})).unwrap();

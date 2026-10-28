@@ -304,8 +304,10 @@ pub(super) fn line(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // Format Shape ▸ Line ▸ Transparency: only a solid line has one.
         if let Some(t) = transparency {
+            let inherited = l.fill.is_none();
             let base = l.fill.clone().or_else(|| ctx_line.get(&sh.id).cloned().flatten());
-            if let Some(Fill::Solid { mut color }) = base {
+            if let Some(Fill::Solid { color: before }) = base {
+                let mut color = before.clone();
                 // The new transparency replaces any alpha: the alpha transforms, and the alpha an
                 // inherited color carries in its resolved RGBA. A theme, preset or system color
                 // (`phClr` included) resolves to an RGBA that can carry an alpha of its own, so 0%
@@ -317,7 +319,10 @@ pub(super) fn line(s: &mut Session, p: &Value) -> Result<Value> {
                 if t > 0.0 || !matches!(color.base, ColorBase::Rgb { .. }) {
                     color.mods.push(ColorTransform::Alpha(((1.0 - t.clamp(0.0, 1.0)) * 100_000.0).round() as i32));
                 }
-                l.fill = Some(Fill::Solid { color });
+                // An inherited color that already has this transparency stays inherited.
+                if !(inherited && color == before) {
+                    l.fill = Some(Fill::Solid { color });
+                }
             }
         }
         // A parameter that changed nothing leaves an automatic line automatic.
