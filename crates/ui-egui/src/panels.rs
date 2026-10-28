@@ -252,6 +252,79 @@ mod tests {
         assert_eq!(h.query_all_by_role_and_label(egui::accesskit::Role::Slider, "Transparency").count(), 0, "No line");
     }
 
+    /// A Transparency slider changed from the keyboard holds its value until it loses the focus.
+    /// When an undo or a command run outside the pane changes the shape first, the slider shows
+    /// the new value, and leaving it does not write the held one back.
+    #[test]
+    fn transparency_sliders_drop_a_held_value_when_the_document_changes() {
+        let alpha = |fill: Option<&Fill>| match fill {
+            Some(Fill::Solid { color }) => color.mods.iter().find_map(|m| match m {
+                ColorTransform::Alpha(v) => Some(*v),
+                _ => None,
+            }),
+            other => panic!("expected a solid fill, got {other:?}"),
+        };
+        for (slider, cmd) in [(0, "shape.fill"), (1, "shape.line")] {
+            let mut h = fill_pane(Some(json!({"color": "#00ff00"})));
+            h.state_mut().session.execute("shape.line", &json!({"color": "#ff0000"})).unwrap();
+            h.state_mut().session.execute(cmd, &json!({"transparency": 0.4})).unwrap();
+            h.run_steps(3);
+            let read = |h: &Harness<'_, SlideApp>| {
+                let doc = h.state().session.active().unwrap();
+                let sh = doc.selected_shapes()[0];
+                if slider == 0 { alpha(sh.fill.as_ref()) } else { alpha(sh.line.as_ref().and_then(|l| l.fill.as_ref())) }
+            };
+            let value = |h: &Harness<'_, SlideApp>| {
+                h.query_all_by_role_and_label(egui::accesskit::Role::Slider, "Transparency")
+                    .nth(slider)
+                    .unwrap()
+                    .accesskit_node()
+                    .numeric_value()
+                    .unwrap()
+            };
+            h.query_all_by_role_and_label(egui::accesskit::Role::Slider, "Transparency").nth(slider).unwrap().focus();
+            h.run_steps(2);
+            h.key_press(egui::Key::ArrowRight);
+            h.run_steps(2);
+            assert!(value(&h) > 40.5, "{cmd}: the arrow key moves the slider, got {}", value(&h));
+            assert_eq!(read(&h), Some(60_000), "{cmd}: nothing is written while the slider keeps the focus");
+
+            h.state_mut().session.execute(cmd, &json!({"transparency": 0.1})).unwrap();
+            h.run_steps(3);
+            assert!((value(&h) - 10.0).abs() < 0.5, "{cmd}: the slider shows the new 10%, got {}", value(&h));
+            h.key_press(egui::Key::Tab);
+            h.run_steps(3);
+            assert_eq!(read(&h), Some(90_000), "{cmd}: leaving the slider keeps the 10% the command set");
+        }
+    }
+
+    /// An effect slider that has the focus holds its value; a command run outside the pane
+    /// replaces it, and leaving the slider does not write the held value back.
+    #[test]
+    fn effect_sliders_drop_a_held_value_when_the_document_changes() {
+        let mut h = fill_pane(None);
+        h.state_mut().session.execute("shape.effects", &json!({"shadow": "outer"})).unwrap();
+        h.state_mut().session.execute("shape.effects", &json!({"shadowProps": {"blur": 4.0}})).unwrap();
+        h.state_mut().ui.format_tab = "effects".into();
+        h.run_steps(3);
+        let blur = |h: &Harness<'_, SlideApp>| {
+            let doc = h.state().session.active().unwrap();
+            doc.selected_shapes()[0].effects.as_ref().and_then(|e| e.outer_shadow.as_ref()).map(|s| s.blur)
+        };
+        let value =
+            |h: &Harness<'_, SlideApp>| h.get_by_role_and_label(egui::accesskit::Role::Slider, "Blur").accesskit_node().numeric_value().unwrap();
+        h.get_by_role_and_label(egui::accesskit::Role::Slider, "Blur").focus();
+        h.run_steps(2);
+        assert!((value(&h) - 4.0).abs() < 0.5, "the slider shows 4 pt, got {}", value(&h));
+
+        h.state_mut().session.execute("shape.effects", &json!({"shadowProps": {"blur": 10.0}})).unwrap();
+        h.run_steps(3);
+        assert!((value(&h) - 10.0).abs() < 0.5, "the slider shows the new 10 pt, got {}", value(&h));
+        h.key_press(egui::Key::Tab);
+        h.run_steps(3);
+        assert_eq!(blur(&h), Some(10.0), "leaving the slider keeps the 10 pt the command set");
+    }
+
     /// An automatic line shows the transparency it inherits from the theme's line style.
     #[test]
     fn line_transparency_slider_shows_an_inherited_lines_transparency() {
