@@ -527,6 +527,13 @@ mod tests {
         // 0% takes the alpha off again.
         s.execute("shape.line", &json!({"ids": [solid], "transparency": 0.0})).unwrap();
         assert_eq!(line(&s, solid).unwrap().fill, Some(Fill::solid(red)));
+
+        // A width and a transparency together keep an automatic line's effective color.
+        let other = rect(&mut s, 340);
+        s.execute("shape.line", &json!({"ids": [other], "width": 3, "transparency": 0.4})).unwrap();
+        let l = line(&s, other).unwrap();
+        assert_eq!(l.width, Some(3.0));
+        assert_eq!(l.fill, Some(Fill::solid(ColorRef::rgb(auto_color).with(ColorTransform::Alpha(60_000)))));
     }
 
     #[test]

@@ -319,6 +319,7 @@ pub(super) fn line(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(g) = &gradient {
             l.fill = Some(Fill::Gradient(g.clone()));
         }
+        let inherited_fill = l.fill.is_none();
         if width.is_some() {
             l.width = width;
             if l.fill.is_none() || matches!(l.fill, Some(Fill::None)) && !none {
@@ -361,7 +362,10 @@ pub(super) fn line(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // Format Shape ▸ Line ▸ Transparency: only a solid line has one.
         if let Some(t) = transparency {
-            let base = l.fill.clone().or_else(|| ctx_line.get(&sh.id).cloned().flatten());
+            // A width given in the same call gives an automatic line a fill of its own, so the
+            // inherited color comes first.
+            let inherited = if inherited_fill { ctx_line.get(&sh.id).cloned().flatten() } else { None };
+            let base = inherited.or_else(|| l.fill.clone());
             if let Some(Fill::Solid { mut color }) = base {
                 // The new transparency replaces any alpha: the alpha transforms, and the alpha an
                 // inherited color carries in its resolved RGBA. A theme, preset or system color
