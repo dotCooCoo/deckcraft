@@ -73,8 +73,8 @@ pub(super) fn change(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// `{stops: [[pos 0–1, color], …], kind?: linear|radial|rectangular|path, angle?: deg (linear),
-/// focus?: [l, t, r, b] fractions (radial/rectangular/path: where the first stop sits),
-/// rotateWithShape?}`.
+/// scaled?: bool (linear), focus?: [l, t, r, b] fractions (radial/rectangular/path: where the first
+/// stop sits), tile?: [l, t, r, b] insets from the shape's box (fractions), rotateWithShape?}`.
 pub(crate) fn gradient_param(v: &Value) -> Option<Gradient> {
     let stops: Vec<GradientStop> = v
         .get("stops")?
@@ -105,10 +105,18 @@ pub(crate) fn gradient_param(v: &Value) -> Option<Gradient> {
         Some("path" | "shape") => path("shape"),
         _ => GradientShape::Linear {
             angle: v.get("angle").and_then(Value::as_f64).filter(|a| a.is_finite()).unwrap_or(90.0).rem_euclid(360.0),
-            scaled: false,
+            scaled: v.get("scaled").and_then(Value::as_bool).unwrap_or(false),
         },
     };
-    Some(Gradient { tile: [0.0; 4], stops, shape, rotate_with_shape: v.get("rotateWithShape").and_then(Value::as_bool).unwrap_or(true) })
+    let tile = v
+        .get("tile")
+        .and_then(Value::as_array)
+        .and_then(|a| {
+            let f = |i: usize| a.get(i).and_then(Value::as_f64).filter(|x| x.is_finite()).map(|x| x.clamp(-10.0, 10.0));
+            Some([f(0)?, f(1)?, f(2)?, f(3)?])
+        })
+        .unwrap_or([0.0; 4]);
+    Some(Gradient { tile, stops, shape, rotate_with_shape: v.get("rotateWithShape").and_then(Value::as_bool).unwrap_or(true) })
 }
 
 /// Fill and outline apply to a group's visible members as well as its container. Other edits

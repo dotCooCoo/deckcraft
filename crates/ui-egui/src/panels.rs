@@ -408,14 +408,36 @@ mod tests {
         assert_eq!(bars(&h), 1, "the line's gradient editor");
         assert_eq!(color_buttons(&h), 0, "a gradient line takes its colors from its stops");
 
-        // An edit in the editor changes the line, in one undo step.
-        let three = json!({"stops": [[0, "accent1"], [0.5, "accent2"], [1, "accent3"]], "angle": 90});
+        // An edit in the editor changes the line, in one undo step, and keeps the gradient's tile
+        // rectangle and scaling.
+        let three = json!({"stops": [[0, "accent1"], [0.5, "accent2"], [1, "accent3"]], "angle": 90, "scaled": true, "tile": [0.0, -0.5, 0.0, 0.5]});
         h.state_mut().session.execute("shape.line", &json!({"gradient": three})).unwrap();
         h.run_steps(3);
         assert_eq!(line_stops(&h), 3);
         h.get_by_role_and_label(Role::Button, "Remove stop").click();
         h.run_steps(3);
         assert_eq!(line_stops(&h), 2);
+        {
+            let doc = h.state().session.active().unwrap();
+            let Some(Fill::Gradient(g)) = doc.selected_shapes()[0].line.as_ref().and_then(|l| l.fill.as_ref()) else {
+                panic!("expected a gradient line")
+            };
+            assert_eq!(g.tile, [0.0, -0.5, 0.0, 0.5]);
+            assert_eq!(g.shape, deckcraft_model::style::GradientShape::Linear { angle: 90.0, scaled: true });
+        }
+        // A new direction keeps them too.
+        h.get_by_label("→").click();
+        h.run_steps(3);
+        {
+            let doc = h.state().session.active().unwrap();
+            let Some(Fill::Gradient(g)) = doc.selected_shapes()[0].line.as_ref().and_then(|l| l.fill.as_ref()) else {
+                panic!("expected a gradient line")
+            };
+            assert_eq!(g.tile, [0.0, -0.5, 0.0, 0.5]);
+            assert_eq!(g.shape, deckcraft_model::style::GradientShape::Linear { angle: 0.0, scaled: true });
+        }
+        h.state_mut().session.execute("edit.undo", &json!({})).unwrap();
+        h.run_steps(2);
         h.state_mut().session.execute("edit.undo", &json!({})).unwrap();
         h.run_steps(2);
         assert_eq!(line_stops(&h), 3);
@@ -525,7 +547,7 @@ mod tests {
         assert_eq!(h.state().session.active().unwrap().history.undo.len(), undo + 1, "one undo step");
         assert_eq!(h.get_by_label("Slide background fill").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
         assert_eq!(color_buttons(&h), 1, "only the line's Color button");
-        assert_eq!(h.query_all_by_role_and_label(egui::accesskit::Role::Slider, "Transparency").count(), 0);
+        assert_eq!(h.query_all_by_role_and_label(egui::accesskit::Role::Slider, "Transparency").count(), 1, "only the line's Transparency slider");
         // A shape that already has the background fill shows this option chosen, not Automatic.
         let h = fill_pane(Some(json!({"background": true})));
         assert_eq!(h.get_by_label("Slide background fill").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));

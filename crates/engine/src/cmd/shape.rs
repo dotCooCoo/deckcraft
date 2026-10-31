@@ -562,6 +562,14 @@ mod tests {
         let saved = back.slides[slide].shape(id).and_then(|sh| sh.line.clone()).and_then(|l| l.fill);
         assert_eq!(saved, l.fill);
 
+        // A tile rectangle and a scaled linear gradient, as a PPTX file can carry, are kept.
+        let tiled = json!({"stops": [[0, "accent1"], [1, "accent2"]], "angle": 30, "scaled": true, "tile": [-0.5, 0.0, 0.25, 1.0]});
+        s.execute("shape.line", &json!({"ids": [id], "gradient": tiled})).unwrap();
+        let Some(Fill::Gradient(g)) = line(&s).fill else { panic!("a gradient line") };
+        assert_eq!(g.shape, GradientShape::Linear { angle: 30.0, scaled: true });
+        assert_eq!(g.tile, [-0.5, 0.0, 0.25, 1.0]);
+        s.execute("edit.undo", &json!({})).unwrap();
+
         // A gradient with fewer than two stops is refused and changes nothing.
         assert!(s.execute("shape.line", &json!({"ids": [id], "gradient": {"stops": [[0, "accent1"]]}})).is_err());
         assert_eq!(line(&s), l);
